@@ -52,12 +52,14 @@ class PolyBenchmark {
   @Param(Array("1000", "10000", "100000"))
   var size: Int = _
 
-  var poly_operators: Chunk[Operator] = _
-  // var mono_operators: Chunk[Operator.DividedBy.type] = _
+  var poly_operators: Chunk[Operator]                = _
+  var mono_operators: Chunk[Operator.DividedBy.type] = _
 
   @Setup
-  def setupPoly(): Unit =
+  def setupPoly(): Unit = {
     poly_operators = Operator.randomN(size)
+    mono_operators = Chunk.fill(size)(Operator.DividedBy)
+  }
 
   @Benchmark
   def poly(blackhole: Blackhole): Unit = {
@@ -65,6 +67,20 @@ class PolyBenchmark {
     var result = 0
     while (i < size) {
       val operator = poly_operators(i)
+
+      result = operator(result, i + 1)
+
+      i = i + 1
+    }
+    blackhole.consume(result)
+  }
+
+  @Benchmark
+  def mono(blackhole: Blackhole): Unit = {
+    var i      = 0
+    var result = 0
+    while (i < size) {
+      val operator = mono_operators(i)
 
       result = operator(result, i + 1)
 
