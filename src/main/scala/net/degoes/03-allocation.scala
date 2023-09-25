@@ -39,14 +39,17 @@ class AllocBenchmark {
   @Param(Array("100", "1000", "10000"))
   var size: Int = _
 
+  var preallocated: Array[AnyRef] = _
   @Setup
-  def setup(): Unit = {}
+  def setup(): Unit               =
+    preallocated = Array.fill(size)(new {})
 
   @Benchmark
   def alloc(blackhole: Blackhole): Unit = {
     var sum = 0
     var i   = 0
     while (i < size) {
+      blackhole.consume(preallocated(i))
       sum = sum + (new {}.hashCode())
       i = i + 1
     }
@@ -54,7 +57,16 @@ class AllocBenchmark {
   }
 
   @Benchmark
-  def noAlloc(blackhole: Blackhole): Unit = ()
+  def noAlloc(blackhole: Blackhole): Unit = {
+    var sum = 0
+    var i   = 0
+    while (i < size) {
+      val obj = preallocated(i)
+      sum = sum + obj.hashCode()
+      i = i + 1
+    }
+    blackhole.consume(sum)
+  }
 }
 
 /**
