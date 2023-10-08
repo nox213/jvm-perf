@@ -16,8 +16,10 @@ import org.openjdk.jmh.annotations._
 import org.openjdk.jmh.infra.Blackhole
 import java.util.concurrent.TimeUnit
 
-import scala.annotation.switch
+import scala.annotation.{ switch, tailrec }
 import scala.util.control.NoStackTrace
+
+import zio.Chunk
 
 /**
  * EXERCISE 1
@@ -883,10 +885,14 @@ class StackInterpreterBenchmark {
   val parser: RouteParser[(String, Int)] =
     Slash *> Literal("users") *> Slash *> StringVar <* Slash <* Literal("posts") <* Slash <*> IntVar
 
-  val opmtimizedParser: RouteParser[(String, Int)] = {
-    import optimized._
+  val opmtimizedParser: optimized.RouteParser[(String, Int)] = {
+    import optimized.RouteParser._
     Slash *> Literal("users") *> Slash *> StringVar <* Slash <* Literal("posts") <* Slash <*> IntVar
   }
+
+  @Setup
+  def setup(): Unit =
+    opmtimizedParser.precompile()
 
   @Benchmark
   def classic(blackhole: Blackhole): Unit =
@@ -973,7 +979,29 @@ class StackInterpreterBenchmark {
 
   object optimized {
     sealed trait RouteParser[+A] {
-      def parse(path: String): Option[(A, String)]
+      import RouteParser.Compiled
+
+      private var _compiled: Compiled = null
+
+      private def compiled: Compiled = {
+        precompile()
+        _compiled
+      }
+
+      def precompile(): Unit =
+        if (_compiled eq null) {
+          _compiled = Compiled.fromRouteParser(this)
+        }
+
+      def parse(path: String): Option[A] = {
+        val c = compiled
+
+        try
+          Some(compiled.execute(path).asInstanceOf[A])
+        catch {
+          case RouteParser.DoesNotMatch => None
+        }
+      }
 
       def <*[B](that: RouteParser[B]): RouteParser[A] =
         this.zipLeft(that)
@@ -984,67 +1012,224 @@ class StackInterpreterBenchmark {
       def <*>[B](that: RouteParser[B]): RouteParser[(A, B)] =
         this.zip(that)
 
-      def combineWith[B, C](that: RouteParser[B])(f: (A, B) => C): RouteParser[C] =
-        RouteParser.Combine(this, that, f)
-
       def map[B](f: A => B): RouteParser[B] =
         RouteParser.Map(this, f)
 
       def zip[B](that: RouteParser[B]): RouteParser[(A, B)] =
-        this.combineWith(that)((_, _))
+        this.zipWith(that)((_, _))
 
       def zipLeft[B](that: RouteParser[B]): RouteParser[A] =
-        this.combineWith(that)((a, _) => a)
+        RouteParser.CombineLeft(this, that)
 
       def zipRight[B](that: RouteParser[B]): RouteParser[B] =
-        this.combineWith(that)((_, b) => b)
+        RouteParser.CombineRight(this, that)
+
+      def zipWith[B, C](that: RouteParser[B])(f: (A, B) => C): RouteParser[C] =
+        RouteParser.Combine(this, that, f)
     }
 
     object RouteParser {
-      case class Literal(value: String) extends RouteParser[Unit] {
-        def parse(path: String): Option[(Unit, String)] =
-          if (path.startsWith(value)) Some(((), path.substring(value.length)))
-          else None
-      }
-
-      case object Slash extends RouteParser[Unit] {
-        def parse(path: String): Option[(Unit, String)] =
-          if (path.startsWith("/")) Some(((), path.substring(1)))
-          else None
-      }
-
-      case object StringVar extends RouteParser[String] {
-        def parse(path: String): Option[(String, String)] = {
-          val idx = path.indexOf('/')
-          if (idx == -1) Some((path, ""))
-          else Some((path.substring(0, idx), path.substring(idx)))
-        }
-      }
-
-      case object IntVar extends RouteParser[Int] {
-        def parse(path: String): Option[(Int, String)] = {
-          val idx = path.indexOf('/')
-          if (idx == -1) {
-            path.toIntOption.map(int => (int, ""))
-          } else {
-            val seg = path.substring(0, idx)
-
-            seg.toIntOption.map(int => (int, path.substring(idx)))
-          }
-        }
-      }
-
-      case class Map[A, B](parser: RouteParser[A], f: A => B) extends RouteParser[B] {
-        def parse(path: String): Option[(B, String)] =
-          parser.parse(path).map { case (a, rest) => (f(a), rest) }
-      }
-
+      case class Literal(value: String) extends RouteParser[Unit]
+      val Slash = Literal("/")
+      case object StringVar                                   extends RouteParser[String]
+      case object IntVar                                      extends RouteParser[Int]
+      case class Map[A, B](parser: RouteParser[A], f: A => B) extends RouteParser[B]
       case class Combine[A, B, C](left: RouteParser[A], right: RouteParser[B], f: (A, B) => C)
-          extends RouteParser[C] {
-        def parse(path: String): Option[(C, String)] =
-          left.parse(path).flatMap { case (a, path) =>
-            right.parse(path).map { case (b, path) => (f(a, b), path) }
+          extends RouteParser[C]
+      case class CombineLeft[A, B](left: RouteParser[A], right: RouteParser[B])
+          extends RouteParser[A]
+      case class CombineRight[A, B](left: RouteParser[A], right: RouteParser[B])
+          extends RouteParser[B]
+
+      case object DoesNotMatch
+          extends Exception("The route does not match the specified path")
+          with NoStackTrace
+
+      case class Compiled(instructions: Chunk[Instr], maxStack: Int) {
+        private val threadLocalStack = new ThreadLocal[Array[Any]] {
+          override def initialValue(): Array[Any] =
+            Array.ofDim[Any](maxStack)
+        }
+
+        def execute(path: String): Any = {
+          val stack     = threadLocalStack.get()
+          var stackSize = 0
+
+          val len       = instructions.length
+          val pathLen   = path.length
+          var pathIndex = 0
+          var i         = 0
+          while (i < len) {
+            val instr = instructions(i)
+
+            (instr.tag: @switch) match {
+              case Tags.Literal =>
+                val value    = instr.asInstanceOf[Instr.Literal].value
+                val valueLen = value.length
+                if (path.regionMatches(pathIndex, value, 0, valueLen)) {
+                  stack(stackSize) = ()
+                  stackSize += 1
+                  pathIndex += valueLen
+                } else
+                  throw DoesNotMatch
+
+              case Tags.LiteralPop =>
+                val value    = instr.asInstanceOf[Instr.LiteralPop].value
+                val valueLen = value.length
+                if (path.regionMatches(pathIndex, value, 0, valueLen)) {
+                  pathIndex += valueLen
+                } else
+                  throw DoesNotMatch
+
+              case Tags.StringVar =>
+                val offset   = pathIndex
+                var endIndex = path.indexOf('/', pathIndex)
+
+                if (endIndex == -1) endIndex = pathLen
+
+                pathIndex = endIndex
+
+                stack(stackSize) = path.substring(offset, endIndex)
+                stackSize += 1
+
+              case Tags.IntVar =>
+                val offset   = pathIndex
+                var endIndex = path.indexOf('/', pathIndex)
+
+                if (endIndex == -1) endIndex = pathLen
+
+                pathIndex = endIndex
+
+                val segment = path.substring(offset, endIndex)
+                stack(stackSize) = segment.toIntOption.getOrElse(throw DoesNotMatch)
+                stackSize += 1
+
+              case Tags.Map1 =>
+                val change = instr.asInstanceOf[Instr.Map1].change
+                val first  = stack(stackSize - 1)
+                stack(stackSize - 1) = change(first)
+              case Tags.Map2 =>
+                val combine = instr.asInstanceOf[Instr.Map2].combine
+                val first   = stack(stackSize - 2)
+                val second  = stack(stackSize - 1)
+                stackSize -= 1
+                stack(stackSize - 1) = combine(first, second)
+              case Tags.Pop  => stackSize -= 1
+            }
+            i += 1
           }
+          stack(stackSize - 1)
+        }
+      }
+
+      object Compiled {
+        def fromRouteParser(parser: RouteParser[_]): Compiled = {
+          def fuseLiteral(list: List[Instr]): List[Instr] =
+            list match {
+              case Instr.Literal(left) :: Instr.Pop :: Instr.Literal(right) :: tail =>
+                println(
+                  s"Optimized Literal($left) :: Pop :: Literal($right) into Literal(${left + right})"
+                )
+                fuseLiteral(Instr.Literal(left + right) :: tail)
+
+              case head :: tail => head :: fuseLiteral(tail)
+
+              case Nil => Nil
+            }
+
+          def literalPopOpt(list: List[Instr]): List[Instr] =
+            list match {
+              case Instr.Literal(value) :: Instr.Pop :: tail =>
+                println(s"Optimized Literal($value) :: Pop into LiteralPop($value)")
+                Instr.LiteralPop(value) :: literalPopOpt(tail)
+
+              case head :: tail => head :: literalPopOpt(tail)
+
+              case Nil => Nil
+            }
+
+          def optimize(value: List[Instr]): List[Instr] =
+            literalPopOpt(fuseLiteral(value))
+
+          @tailrec
+          def fullyOptimize(list: List[Instr]): List[Instr] = {
+            val optimized = optimize(list)
+            if (optimized == list) optimized
+            else fullyOptimize(optimized)
+          }
+
+          def loop(parser: RouteParser[_]): Chunk[Instr] =
+            parser match {
+              case RouteParser.Literal(value)            => Chunk(Instr.Literal(value))
+              case RouteParser.StringVar                 => Chunk(Instr.StringVar)
+              case RouteParser.IntVar                    => Chunk(Instr.IntVar)
+              case RouteParser.Map(parser, f)            =>
+                loop(parser) :+ Instr.Map1(f.asInstanceOf[Any => Any])
+              case RouteParser.Combine(left, right, f)   =>
+                loop(left) ++ loop(right) :+ Instr.Map2(f.asInstanceOf[(Any, Any) => Any])
+              case RouteParser.CombineLeft(left, right)  => loop(left) ++ loop(right) :+ Instr.Pop
+              case RouteParser.CombineRight(left, right) => (loop(left) :+ Instr.Pop) ++ loop(right)
+            }
+
+          val instructions = Chunk.fromIterable(fullyOptimize(loop(parser).toList)).materialize
+          println("**************")
+          println(instructions.mkString("\n"))
+          println("**************")
+
+          val maxStack = instructions
+            .foldLeft(0, 0) { case ((curSize, maxStackSize), instr) =>
+              val nextSize = instr match {
+                case Instr.Literal(_)    => curSize + 1
+                case Instr.LiteralPop(_) => curSize
+                case Instr.StringVar     => curSize + 1
+                case Instr.IntVar        => curSize + 1
+                case Instr.Map1(_)       => curSize
+                case Instr.Map2(_)       => curSize - 1
+                case Instr.Pop           => curSize - 1
+              }
+
+              (nextSize, if (nextSize > maxStackSize) nextSize else maxStackSize)
+            }
+            ._2
+
+          Compiled(loop(parser).materialize, maxStack)
+        }
+      }
+
+      private object Tags {
+        final val Literal    = 0
+        final val LiteralPop = 1
+        final val StringVar  = 2
+        final val IntVar     = 3
+        final val Map1       = 4
+        final val Map2       = 5
+        final val Pop        = 6
+      }
+      sealed trait Instr  {
+        def tag: Int
+      }
+      object Instr        {
+        case class Literal(value: String)           extends Instr {
+          def tag: Int = Tags.Literal
+        }
+        case class LiteralPop(value: String)        extends Instr {
+          def tag: Int = Tags.LiteralPop
+        }
+        case object StringVar                       extends Instr {
+          def tag: Int = Tags.StringVar
+        }
+        case object IntVar                          extends Instr {
+          def tag: Int = Tags.IntVar
+        }
+        case class Map1(change: Any => Any)         extends Instr {
+          def tag: Int = Tags.Map1
+        }
+        case class Map2(combine: (Any, Any) => Any) extends Instr {
+          def tag: Int = Tags.Map2
+        }
+        case object Pop                             extends Instr {
+          def tag: Int = Tags.Pop
+        }
       }
     }
   }
