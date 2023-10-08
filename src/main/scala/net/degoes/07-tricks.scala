@@ -1205,31 +1205,15 @@ class StackInterpreterBenchmark {
         final val Map2       = 5
         final val Pop        = 6
       }
-      sealed trait Instr  {
-        def tag: Int
-      }
+      sealed abstract class Instr(val tag: Int)
       object Instr        {
-        case class Literal(value: String)           extends Instr {
-          def tag: Int = Tags.Literal
-        }
-        case class LiteralPop(value: String)        extends Instr {
-          def tag: Int = Tags.LiteralPop
-        }
-        case object StringVar                       extends Instr {
-          def tag: Int = Tags.StringVar
-        }
-        case object IntVar                          extends Instr {
-          def tag: Int = Tags.IntVar
-        }
-        case class Map1(change: Any => Any)         extends Instr {
-          def tag: Int = Tags.Map1
-        }
-        case class Map2(combine: (Any, Any) => Any) extends Instr {
-          def tag: Int = Tags.Map2
-        }
-        case object Pop                             extends Instr {
-          def tag: Int = Tags.Pop
-        }
+        case class Literal(value: String)           extends Instr(Tags.Literal)
+        case class LiteralPop(value: String)        extends Instr(Tags.LiteralPop)
+        case object StringVar                       extends Instr(Tags.StringVar)
+        case object IntVar                          extends Instr(Tags.IntVar)
+        case class Map1(change: Any => Any)         extends Instr(Tags.Map1)
+        case class Map2(combine: (Any, Any) => Any) extends Instr(Tags.Map2)
+        case object Pop                             extends Instr(Tags.Pop)
       }
     }
   }
