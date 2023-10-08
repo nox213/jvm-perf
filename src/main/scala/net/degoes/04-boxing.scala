@@ -37,19 +37,22 @@ class BoxedBenchmark {
   @Param(Array("100", "1000", "10000"))
   var size: Int = _
 
-  var boxed: Array[Boxed[Int]] = _
+  var boxed: Array[java.lang.Integer] = _
+  var unboxed: Array[Int]             = _
 
   @Setup
-  def setup(): Unit =
-    boxed = Array.fill(size)(Boxed[Int](0))
+  def setup(): Unit = {
+    boxed = Array.fill(size)(new java.lang.Integer(0))
+    unboxed = Array.fill(size)(0)
+  }
 
   @Benchmark
   def boxed(blackhole: Blackhole): Unit = {
     var i   = 0
     var sum = 0
     while (i < size) {
-      val newValue = boxed(i).value + 1
-      boxed(i) = Boxed(newValue)
+      val newValue = boxed(i) + 1
+      boxed(i) = new java.lang.Integer(newValue)
       sum = sum + newValue
       i = i + 1
     }
@@ -57,7 +60,17 @@ class BoxedBenchmark {
   }
 
   @Benchmark
-  def unboxed(blackhole: Blackhole): Unit = ()
+  def unboxed(blackhole: Blackhole): Unit = {
+    var i   = 0
+    var sum = 0
+    while (i < size) {
+      val newValue = unboxed(i) + 1
+      unboxed(i) = newValue
+      sum = sum + newValue
+      i = i + 1
+    }
+    blackhole.consume(sum)
+  }
 
   case class Boxed[T](value: T)
 }
@@ -100,10 +113,28 @@ class BoxedComparatorBenchmark {
     blackhole.consume(sum)
   }
 
+  @Benchmark
+  def unboxed(blackhole: Blackhole): Unit = {
+    var i   = 0
+    var sum = 0
+    while (i < size) {
+      sum += IntSpecializedComparator.compare(ints(i), 0)
+      i = i + 1
+    }
+    blackhole.consume(sum)
+  }
+
   trait Comparator[T] {
     def compare(l: T, r: T): Int
   }
   val IntGenericComparator: Comparator[Int] = new Comparator[Int] {
+    def compare(l: Int, r: Int): Int = l - r
+  }
+
+  trait IntComparator {
+    def compare(l: Int, r: Int): Int
+  }
+  val IntSpecializedComparator: IntComparator = new IntComparator {
     def compare(l: Int, r: Int): Int = l - r
   }
 }

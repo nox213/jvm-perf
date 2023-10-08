@@ -180,7 +180,7 @@ class Estimation3Benchmark {
     def isInt(s: String): Boolean =
       try {
         s.toInt
-        false
+        true
       } catch {
         case _: NumberFormatException => false
       }
@@ -198,6 +198,52 @@ class Estimation3Benchmark {
     val isDigit: Char => Boolean = _.isDigit
 
     def isInt(s: String): Boolean = s.forall(isDigit)
+
+    var i    = 0
+    var ints = 0
+    while (i < maybeInts.length) {
+      if (isInt(maybeInts(i))) ints += 1
+      i = i + 1
+    }
+    blackhole.consume(ints)
+  }
+
+  @Benchmark
+  def checkInt3(blackhole: Blackhole): Unit = {
+    val isDigit: Char => Boolean = _.isDigit
+
+    def isInt(s: String): Boolean = {
+      var i   = 0
+      val len = s.length
+      while (i < len) {
+        if (!isDigit(s.charAt(i))) return false
+        i += 1
+      }
+      true
+    }
+
+    var i    = 0
+    var ints = 0
+    while (i < maybeInts.length) {
+      if (isInt(maybeInts(i))) ints += 1
+      i = i + 1
+    }
+    blackhole.consume(ints)
+  }
+
+  @Benchmark
+  def checkInt4(blackhole: Blackhole): Unit = {
+    def isDigit(c: Char) = c.isDigit
+
+    def isInt(s: String): Boolean = {
+      var i   = 0
+      val len = s.length
+      while (i < len) {
+        if (!isDigit(s.charAt(i))) return false
+        i += 1
+      }
+      true
+    }
 
     var i    = 0
     var ints = 0
@@ -231,9 +277,10 @@ class Estimation4Benchmark {
   val Adders: Array[Int => Int] =
     Array(_ + 1, _ + 2, _ + 3, _ + 4, _ + 5)
 
-  var operations1: Array[Int => Int]          = _
-  var operations2: Array[ElementChanger[Int]] = _
-  var operations3: Array[IntegerChanger]      = _
+  var operations1: Array[Int => Int] =
+    _ // virtual dispatch + jit cannot optimize, at least no boxing
+  var operations2: Array[ElementChanger[Int]] = _ // boxing + jit can optimize dispatching
+  var operations3: Array[IntegerChanger]      = _ // no boxing + jit can optimize dispatching
 
   @Setup
   def setup(): Unit = {

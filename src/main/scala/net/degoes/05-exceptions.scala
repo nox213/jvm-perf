@@ -12,6 +12,8 @@ import org.openjdk.jmh.annotations._
 import org.openjdk.jmh.infra.Blackhole
 import java.util.concurrent.TimeUnit
 
+import scala.util.control.NoStackTrace
+
 /**
  * EXERCISE 1
  *
@@ -30,10 +32,15 @@ class ThrowExceptionBenchmark {
   case class MyException(message: String) extends Exception(message)
 
   @Benchmark
-  def throwCatchException(): Unit = ???
+  def throwCatchException(): Unit =
+    try throw MyException("boom")
+    catch {
+      case _: Throwable => ()
+    }
 
   @Benchmark
-  def constructException(): Unit = ???
+  def constructException(blackhole: Blackhole): Unit =
+    blackhole.consume(MyException("boom"))
 }
 
 /**
@@ -61,7 +68,9 @@ class ThrowSameExceptionBenchmark {
   catch { case _: Throwable => () }
 
   @Benchmark
-  def throwCatchSameException(): Unit = ??? // TODO
+  def throwCatchSameException(): Unit =
+    try throw exception
+    catch { case _: Throwable => () }
 }
 
 /**
@@ -78,15 +87,17 @@ class ThrowSameExceptionBenchmark {
 @Fork(value = 1, jvmArgsAppend = Array())
 @Threads(16)
 class FillInStackTraceBenchmark {
-  case class MyException(message: String) extends Exception(message)
+  case class MyException(message: String)      extends Exception(message)
+  case class NoStackException(message: String) extends Exception(message) with NoStackTrace
 
   val exception = MyException("Hello")
 
   @Benchmark
-  def fillInStackTrace(): Unit = ??? // TODO
+  def fillInStackTrace(blackhole: Blackhole): Unit =
+    blackhole.consume(exception.fillInStackTrace())
 
   @Benchmark
   def throwCatchNewException(): Unit = try
-    throw MyException("Hello")
+    throw NoStackException("Hello")
   catch { case _: Throwable => () }
 }

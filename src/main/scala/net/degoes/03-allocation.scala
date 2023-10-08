@@ -93,8 +93,23 @@ class CopyAllocBenchmark {
     people = Chunk.fromIterable(0 until size).map(Person(_))
 
   @Benchmark
-  def alloc(): Unit =
-    people.map(p => p.copy(age = p.age + 1))
+  def alloc(blackhole: Blackhole): Unit =
+    blackhole.consume(people.map(p => p.copy(age = p.age + 1)))
+
+  @Benchmark
+  def noalloc(blackhole: Blackhole): Unit = {
+    val mat = people.materialize
+    var i   = 0
+    while (i < mat.length) {
+      mat(i).age += 1
+      i += 1
+    }
+    blackhole.consume(mat)
+  }
+
+  @Benchmark
+  def noallocForeach(blackhole: Blackhole): Unit =
+    blackhole.consume(people.foreach(_.age += 1))
 
   case class Person(var age: Int)
 }
