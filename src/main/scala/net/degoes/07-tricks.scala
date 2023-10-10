@@ -1101,7 +1101,11 @@ class StackInterpreterBenchmark {
                 pathIndex = endIndex
 
                 val segment = path.substring(offset, endIndex)
-                stack(stackSize) = segment.toIntOption.getOrElse(throw DoesNotMatch)
+                try
+                  stack(stackSize) = segment.toInt
+                catch {
+                  case _: NumberFormatException => throw DoesNotMatch
+                }
                 stackSize += 1
 
               case Tags.Map1 =>
